@@ -1,0 +1,30 @@
+{
+  "camera": {
+    "frame_rate": 8,
+    "on_detection": null,
+    "left_index": 0,
+    "right_index": 1
+  },
+  "laser": {
+    "max_angle_deg": 30.0,
+    "laser_pin": "D17",
+    "gain": 1,
+    "max_code": 4095,
+    "shoot_time_s": 0.5,
+    "posShoot_time_s": 1
+  },
+  "optics": {
+    "baseline_m": 0.10,
+    "h_cl_m": 0.0,
+    "focal_length_mm": 4.74,
+    "pixel_size_mm": 0.00155,
+    "stereo_calibration_path": null
+  },
+  "detection": {
+    "score_min_detection": 0.10,
+    "pair_max_dist_px": 100 
+  },
+  "security": {
+    "border_sec": 0.2
+  }
+}
