@@ -13,15 +13,38 @@ Ce projet vise à **détecter automatiquement les frelons** à l’aide d’une 
 
 ## Liste du matériel
 
-* Raspberry Pi 5 — 8 Go
-* 2 x Raspberry Pi AI Camera (IMX500)
-* Module galvo laser
-  Produit : [https://www.amazon.fr/dp/B0C7VLWXV3](https://www.amazon.fr/dp/B0C7VLWXV3)
-  Alimentation
-*  2x ....
-*  1x
-* Laser (attention c'est dangereux)
-* Boîtier
+- Raspberry Pi 5 — 8 Go ×1
+- Alimentation pour Raspberry Pi 5 ×1
+- Ventilateur actif pour Raspberry Pi 5 ×1
+- Raspberry Pi AI Camera (Sony IMX500) ×2
+- Module galvo laser ×1  
+  Produit : https://www.amazon.fr/dp/B0C7VLWXV3
+- Alimentation pour module galvo ×1
+- Laser (dangereux) ×1
+- Boîtier ×1
+- 2x AOP TL082 
+- 1x DAC MCP4288 
+
+## Conditions de montage et d’alignement
+
+Pour un fonctionnement optimal :
+
+- Les caméras et la sortie du galvanomètre doivent être alignées en profondeur.
+- Le galvanomètre doit être positionné sous la caméra gauche.
+- Le système de visée est basé sur la caméra gauche, qui doit être parfaitement alignée avec la sortie des miroirs.
+- Distance entre les centres optiques des deux caméras (`baseline_m`) : ex : 10 cm.
+- Les deux caméras doivent être strictement parallèles.
+
+### Paramètres de configuration
+
+Les variables suivantes sont modifiables dans le fichier de configuration :
+
+- `baseline_m` = 10 cm (par défaut)
+- `h_cl_m` = 9.5 cm (par défaut)
+
+### Schéma
+![Boitier](img/reglePlan.png)
+
 
 ---
 
@@ -240,36 +263,7 @@ python mainNoUI.py
 ---
 
 ## Explication technique
-
-### Calcul de profondeur
-
-La profondeur est calculée par trigonométrie.
-
-Schéma :
-![Schéma de profondeur](img/shemaProfondeur.png)
-
-### Caméra
-
-Documentation officielle :
-[https://www.raspberrypi.com/documentation/accessories/ai-camera.html](https://www.raspberrypi.com/documentation/accessories/ai-camera.html)
-
-Utilisation :
-* OpenCV pour calibration
-* Calibration mono et stéréo
-* Exploitation de la NPU IMX500
-* YOLO11n optimisé pour performance temps réel
-
-### Galvos
-
-Code basé sur :
-[https://www.instructables.com/Arduino-Laser-Show-With-Real-Galvos/](https://www.instructables.com/Arduino-Laser-Show-With-Real-Galvos/)
-
-Rôle :
-
-* Convertir les coordonnées IA → angles
-* Piloter précisément le laser
-* Correction géométrique
-
+Readme.md dans chaque classe
 
 ## Sécurité
 
@@ -282,16 +276,123 @@ Rôle :
 
 Une **safe zone** en pixels est définie.
 
-# Boitier 
-![Boitier](img/reglePlan.png)
-le camera doivet être sur le même plant sur le galvanometre, et la caméra gauche doit petre paralère par rapport au galvo
+
+## Branchement électrique – Tourelle Laser
+
+### Objectif du système
+
+Ce montage a pour but de piloter deux galvanomètres (axes X et Y) afin d’orienter un faisceau laser.  
+La Raspberry Pi 5 génère des commandes numériques, converties en signaux analogiques par un DAC (MCP4822), puis amplifiées par des AOP (TL082) avant d’être envoyées aux drivers des galvanomètres.
+
+L’ensemble des modules analogiques est alimenté par une alimentation bipolaire ±12 V commune.
+
+### Interface SPI
+
+Le SPI est un protocole de communication série synchrone permettant de relier un maître (Raspberry Pi) à un ou plusieurs esclaves (DAC) à l’aide de quelques fils.
+
+#### Lignes SPI utilisées
+
+| Nom  | Signification           | Direction     | Rôle                                 |
+|------|-------------------------|---------------|--------------------------------------|
+| MOSI | Master Out Slave In     | Pi → DAC      | Données envoyées par la Raspberry Pi |
+| MISO | Master In Slave Out     | DAC → Pi      | Données renvoyées (non utilisé ici) |
+| SCK  | Serial Clock            | Pi → DAC      | Horloge SPI                          |
+| CS   | Chip Select             | Pi → DAC      | Sélection du périphérique            |
+
+### Raspberry Pi 5
+
+#### Rôle
+
+- Contrôleur principal
+- Génère les valeurs numériques envoyées au DAC via SPI
+- Pilote l’allumage/extinction du laser
+![b1](img/b1.png)
+
+### DAC MCP4822
+
+#### Description
+
+- Convertisseur numérique–analogique double canal (12 bits)
+- Deux sorties analogiques : axe X et axe Y
+- Plage de sortie : 0 à 4,096 V
+- Interface : SPI
+
+![b2](img/b2.png)
+
+#### Connexions
+
+| Nom     | Pin connecté                | Fonction                     |
+|----------|-----------------------------|------------------------------|
+| VDD      | 3V3 (Pi 5)                  | Alimentation +3,3 V          |
+| CS       | GPIO 8 (CE0) (Pi 5)         | Chip Select SPI              |
+| SCK      | GPIO 11 (SCLK) (Pi 5)       | Horloge SPI                  |
+| SDI      | GPIO 10 (MOSI) (Pi 5)       | Données SPI                  |
+| LDAC     | GPIO 23 (Pi 5) ou GND       | Latch DAC                    |
+| Vout A   | -IN A (TL082 X) via 10 kΩ   | Sortie analogique axe X      |
+| Vout B   | -IN B (TL082 Y) via 10 kΩ   | Sortie analogique axe Y      |
+| AVss     | GND (Pi 5)                  | Masse                        |
+
+### AOP TL082
+
+#### Description
+
+- Double amplificateur opérationnel
+- Alimentation : ±12 V
+- Génère des signaux bipolaires (≈ -5 V à +5 V)
+- Fonctions :
+  - Canal A : mise à l’échelle du signal (0–4 V → ±5 V)
+  - Canal B : inversion pour créer un signal différentiel
+
+![b3](img/b3.png)
+
+#### Connexions
+
+| Nom    | Connexion                              | Fonction                                      |
+|---------|---------------------------------------|-----------------------------------------------|
+| OUT A   | Vers driver IN+                        | Sortie canal A                                |
+|         | Vers -IN B (via 10 kΩ)                | Liaison interne                               |
+|         | R feedback 24.3 kΩ vers -IN A         | Boucle de rétroaction                         |
+| -IN A  | Vout A (DAC) via 10 kΩ                | Entrée inverseuse canal A                     |
+| +IN A  | GND                                   | Entrée non-inverseuse canal A                 |
+| V−     | −12 V                                 | Alimentation négative                         |
+| +IN B  | GND                                   | Entrée non-inverseuse canal B                 |
+| -IN B  | OUT A via 10 kΩ                       | Entrée inverseuse canal B                     |
+| OUT B  | Vers driver IN−                       | Sortie canal B                                |
+|         | R feedback 24.3 kΩ vers -IN B         | Boucle de rétroaction                         |
+| V+     | +12 V                                 | Alimentation positive                         |
+
+
+![b4](img/b4.png)
+
+### Drivers des galvanomètres
+
+#### Description
+
+- Cartes fournies avec les galvanomètres
+- Alimentées en ±12 V
+- Entrées différentielles : IN+, IN−, GND
+- Commande proportionnelle à la tension :
+  - +5 V → déviation maximale
+  - −5 V → déviation maximale opposée
+  - 0 V → position centrale
+
+#### Connexions
+
+| Driver | Connexion          |
+|--------|-------------------|
+| IN +   | OUT A (TL082)     |
+| IN −   | OUT B (TL082)     |
+| GND    | GND alimentation  |
+
+![b5](img/b5.png)
+
+---
 
 ## TODO
 
 ### Logiciel
 
-* [ ] Configuration safe zone en pixels
-* [ ] `pip freeze` → liste exacte des dépendances
+* [ ] Configuration safe zone à ajouster lors setup
 * [ ] Tests :
   * setup.py (voir bouton pour laser)
   * mainNoUI.py
@@ -299,10 +400,7 @@ le camera doivet être sur le même plant sur le galvanometre, et la caméra gau
 
 ### Documentation
 
-* [ ] Datasheet caméra
-* [ ] Datasheet galvo
-* [ ] Guide IA complet
-* [ ] Guide installation Raspberry
-* [ ] Explication architecture
-* [ ] Schéma du boîtier
-* [ ] Organisation interne
+* [ ] Schéma du boîtier ?
+
+## Problème possible
+laser fait un rectagle, dans angle on part du postula que sa fait un carré

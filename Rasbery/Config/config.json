@@ -4,8 +4,8 @@
     "on_detection": null,
     "left_index": 0,
     "right_index": 1,
-    "ia_packerOutZip_path": "packerOut.zip",
-    "ia_labelTxt_path": "labels.txt"
+    "ia_packerOutZip_path": "IA/packerOut.zip",
+    "ia_labelTxt_path": "IA/labels.txt"
   },
   "laser": {
     "max_angle_deg": 30.0,

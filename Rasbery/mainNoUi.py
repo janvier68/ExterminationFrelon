@@ -11,7 +11,7 @@ from Config import load_config, gpio_from_string
 # =============================
 # paramètres
 # =============================
-cfg = load_config("config/config.json")
+cfg = load_config("Config/config.json")
 
 SCORE_MIN_DETECTION = float(cfg["detection"]["score_min_detection"])
 PAIR_MAX_DIST_PX = int(cfg["detection"]["pair_max_dist_px"])

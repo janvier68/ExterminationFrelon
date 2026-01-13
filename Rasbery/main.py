@@ -15,7 +15,7 @@ app = Flask(__name__)
 # =============================
 # paramètres
 # =============================
-cfg = load_config("config/config.json")
+cfg = load_config("Config/config.json")
 
 SCORE_MIN_DETECTION = float(cfg["detection"]["score_min_detection"])
 PAIR_MAX_DIST_PX = int(cfg["detection"]["pair_max_dist_px"])
@@ -31,6 +31,7 @@ galvo = GalvoController(
     gain=int(cfg["laser"]["gain"]),
     safe_start=bool(cfg["laser"].get("safe_start", True)),
 )
+
 
 # =============================
 # Profondeur + angles
@@ -159,7 +160,7 @@ def shooting_loop():
 
         # 5) pilotage galvo
         # Convention : theta_x = yaw (horizontal), theta_y = pitch (vertical)
-        galvo.set_angles(theta_x=yaw_deg, theta_y=pitch_deg)
+        galvo.set_angles(theta_x=-yaw_deg, theta_y=pitch_deg)
         time.sleep(0.05)
         # 6) tir
         galvo.laser_on()
@@ -177,13 +178,12 @@ def shooting_loop():
 # =============================
 def signal_handler(sig, frame):
     print("[INFO] Arrêt")
-    camG.stop()
-    camD.stop()
+    # camG.stop()
+    # camD.stop()
     galvo.shutdown()
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
-
 
 # =============================
 # lancement

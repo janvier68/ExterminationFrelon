@@ -1,43 +1,154 @@
-labelisation : https://github.com/developer0hye/Yolo_Label
+# Partie IA
+
+## 1. Présentation
+
+Cette partie du projet concerne la préparation des données, l'entraînement d'un modèle YOLO, l'augmentation du dataset, puis l'export et le déploiement du modèle sur un **Raspberry Pi 5 avec IMX500**.
+
+Le dépôt de labellisation utilisé :
+[dataset roboflow](https://universe.roboflow.com/toan-ydjjh/bee-management-system-2angl/dataset/2)
+on à rajouter notre propre labélisation avec https://github.com/developer0hye/Yolo_Label
 
 
+## 2. Structure des outils
 
-Exporter modèle sur rasberi pi 5 imx500
+### 2.1 augmente.py
 
-Installer les outils côté Raspberry Pi 5
+Script permettant d'augmenter un dataset par :
 
+* Zoom
+* Tuilage (tiling)
+* Génération d'images synthétiques
 
+#### Utilisation
+
+```bash
+python augmente.py --in_dir origineLabel --out_dir dataAugmented --count 3000
+```
+
+#### Paramètres
+
+* `--in_dir` : dossier contenant les images et labels d'origine
+* `--out_dir` : dossier de sortie pour les données augmentées
+* `--count` : nombre total d'images générées
+
+### 2.2 export.py
+
+Script permettant de convertir un modèle YOLO (.pt ou .onnx) vers un format compatible IMX500.
+Il génère un fichier `packerOut.zip` utilisable par les outils Sony IMX500.
+
+### 2.3 newDataset.sh
+
+Script shell permettant de :
+
+* Dézipper un nouveau dataset
+* L'intégrer dans un dataset existant
+* Respecter la structure :
+
+```
+train/
+ ├── images/
+ └── labels/
+val/
+ ├── images/
+ └── labels/
+test/
+ ├── images/
+ └── labels/
+```
+
+### 2.4 splitVideoImage
+
+Script permettant d'extraire des images depuis une vidéo à un intervalle donné.
+
+Exemple : 1 image toutes les X secondes.
+
+### 2.5 train.py
+
+Script d'entraînement du modèle YOLO à partir du dataset préparé.
+
+Fonctionnalités :
+
+* Chargement du dataset
+* Entraînement
+* Sauvegarde des poids
+* Export possible vers ONNX
+
+## 3. Pipeline IA complet
+
+### Étape 1 — Préparation des données
+
+1. Labellisation via Yolo_Label
+2. Augmentation du dataset (augmente.py)
+3. Fusion de datasets si nécessaire (newDataset.sh)
+
+### Étape 2 — Entraînement
+
+Lancer l'entraînement :
+
+```bash
+python train.py
+```
+
+À la fin, on obtient un modèle :`.pt`
+
+## 4. Export du modèle pour IMX500 (Raspberry Pi 5)
+
+### 4.1 Génération du package IMX500
+
+À partir de ton modèle `.pt` :
+
+```bash
+python export.py
+```
+
+Cela génère best_imx_model avec:
+
+```
+packerOut.zip
+```
+
+### 4.2 Transfert vers le Raspberry Pi
+
+Copier sur le Raspberry Pi :
+
+* `packerOut.zip`
+* `label.txt`
+
+Dans le dossier :
+
+```
+Raspberry/IA/
+```
+
+## 5. Installation côté Raspberry Pi 5
+
+### 5.1 Mise à jour système
+
+```bash
 sudo apt update && sudo apt full-upgrade
-sudo apt install imx500-all    # firmware + packager + post-traitements
+```
+
+### 5.2 Installation des outils IMX500
+
+```bash
+sudo apt install imx500-all
 sudo reboot
+```
 
+Cela installe :
 
-Obtenir packerOut.zip à partir de ton model.onnx
-executer export.py
+* Firmware IMX500
+* Outils de packaging
+* Post-traitements
 
+## 6. Déploiement du modèle
 
-Packager sur le Raspberry Pi → network.rpk
-Transfère packerOut.zip sur le Pi puis:
+une fois bien mis, vous pourrez le voire en action dans main.py
 
+## 7. Dépendances
 
-
-imx500-package -i /chemin/vers/packerOut.zip -o out_dir
-# génère out_dir/network.rpk
-Doit être exécuté sur le Pi. ([Raspberry Pi][5])
-Docs packager officielles si besoin. ([developer.aitrios.sony-semicon.com][6])
-
-Charger et exécuter sur l’IMX500
-
-
-
-Picamera2 (Python)
-
-from picamera2 import Picamera2
-from picamera2.devices.imx500 import IMX500
-
-picam = Picamera2()
-imx = IMX500("/chemin/out_dir/network.rpk")
-imx.show_network_fw_progress_bar()   # suivi du chargement firmware
-picam.start()
-# récupère les tensors via picam.metadata, puis post-traiter
-
+* Python 3.8+
+* YOLO (Ultralytics ou autre)
+* OpenCV
+* Numpy
+* Outils Sony IMX500

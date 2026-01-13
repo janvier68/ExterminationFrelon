@@ -3,10 +3,6 @@ import board
 import busio
 from digitalio import DigitalInOut, Direction
 from .mcp48xx import MCP4822
-from .utils import angle_to_dac
-
-
-
 
 class GalvoController:
     def __init__(
