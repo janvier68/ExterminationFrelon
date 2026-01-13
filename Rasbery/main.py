@@ -5,10 +5,10 @@ import time
 import threading
 import board 
 
-from galvo import GalvoController
-from ia import CameraManager
+from Galvo import GalvoController
+from Cam import CameraManager
 from Profondeur import StereoAngleCalculator
-from config import load_config,gpio_from_string
+from Config import load_config,gpio_from_string
 
 app = Flask(__name__)
 

@@ -1,375 +1,477 @@
+# calib_server.py
+# Flask (web) uniquement : saisie paramètres -> capture paires -> calibration stéréo -> contrôle RMS -> boucle si NOK
+# + Alignement laser : mesure rectangle sur mur -> calcule max_angle_deg -> écrit JSON
 
-#!/usr/bin/env python3
-# orchestrator_calibration.py
-#
-# Flow:
-# 1) Demande à l’utilisateur: baseline (m), nb photos, délai (s), pattern damier, taille carré (m)
-# 2) Lance l’UI de capture (basé sur photoForCalib.py) en lui passant N_PHOTOS + COUNTDOWN_SECONDS
-# 3) Lance la calibration stéréo (basé sur calibrationCamera.py) -> produit stereo_params.npz
-# 4) Vérifie la qualité (RMS <= seuil). Si NOK: recommence capture + calibration
-# 5) Alignment laser: affiche une mire (carré max + croix centre), stream cam gauche avec centre.
-#    L’utilisateur ajuste physiquement le laser pour que centre laser = centre caméra.
-# 6) Demande: distance mur (m) + largeur/hauteur rectangle laser (m)
-#    Calcule max_angle_deg et écrit dans le JSON + paths.
-
-import os
-import sys
-import json
-import time
-import math
-import shutil
-import signal
-import subprocess
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
-
+from flask import Flask, request, jsonify, render_template_string
+from picamera2 import Picamera2
 import cv2
+import numpy as np
+import threading
+import time
+import os
+import glob
+import json
+import signal
+import sys
+import math
 
-# ====== chemins vers TES scripts (fichiers fournis) ======
-CAPTURE_UI_PY = "/mnt/data/photoForCalib.py"         # :contentReference[oaicite:0]{index=0}
-STEREO_CALIB_PY = "/mnt/data/calibrationCamera.py"  # :contentReference[oaicite:1]{index=1}
+import board
+from galvo import GalvoController  # même usage que main.py :contentReference[oaicite:0]{index=0}
 
-# ====== config ======
-CONFIG_JSON_PATH = "config.json"
-DEFAULT_CALIB_ROOT = "photos_calibration"  # photoForCalib.py crée photos_calibration, photos_calibration1, etc. :contentReference[oaicite:2]{index=2}
+# ---------------------------
+# Fichiers
+# ---------------------------
+CONFIG_PATH = "Config/config.json"  # adapte si besoin
+CALIB_ROOT_DIR = "Config/photos_calibration"
+DEBUG_SUBDIR = "Config/visualisation_calibration"
 
-RMS_OK_THRESHOLD = 1.5  # à ajuster selon ton setup (plus bas = plus strict)
+# ---------------------------
+# Flask
+# ---------------------------
+app = Flask(__name__)
 
-# ====== laser mire (aide visuelle) ======
-MIRE_WIN = "Mire Laser (aide alignment)"
-CAM_WIN = "Cam Gauche (centre)"
-FONT = cv2.FONT_HERSHEY_SIMPLEX
+# ---------------------------
+# Caméras (Picamera2)
+# (même logique capture que photoForCalib.py) :contentReference[oaicite:1]{index=1}
+# ---------------------------
+camL = Picamera2(camera_num=1)  # adapte si inversé
+camR = Picamera2(camera_num=0)
+camL.start()
+camR.start()
+lockL = threading.Lock()
+lockR = threading.Lock()
 
+def capture_bgr(camera: Picamera2, lock: threading.Lock):
+    with lock:
+        req = camera.capture_request()
+        frame = req.make_array("main")
+        req.release()
+    return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-def die(msg: str, code: int = 1):
-    raise SystemExit(f"[ERREUR] {msg}")
-
-
-def load_json(path: str) -> Dict[str, Any]:
+# ---------------------------
+# Config JSON helpers
+# ---------------------------
+def load_json(path: str) -> dict:
     if not os.path.exists(path):
         return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        die(f"Impossible de lire {path}: {e}")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-
-def save_json(path: str, data: Dict[str, Any]):
+def save_json(path: str, data: dict):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     os.replace(tmp, path)
 
+def ensure_dir_unique(base_dir: str) -> str:
+    d = base_dir
+    if os.path.exists(d):
+        i = 1
+        while os.path.exists(f"{base_dir}{i}"):
+            i += 1
+        d = f"{base_dir}{i}"
+    os.makedirs(d, exist_ok=True)
+    return d
 
-def ensure_dict(d: Dict[str, Any], key: str) -> Dict[str, Any]:
-    if key not in d or not isinstance(d[key], dict):
-        d[key] = {}
-    return d[key]
+# ---------------------------
+# Calibration stéréo
+# (reprend la logique de calibrationCamera.py) :contentReference[oaicite:2]{index=2}
+# ---------------------------
+def run_stereo_calibration(calib_dir: str, pattern_size: tuple[int, int], square_size_m: float):
+    left_glob = os.path.join(calib_dir, "left_*.png")
+    right_glob = os.path.join(calib_dir, "right_*.png")
+    left_files = sorted(glob.glob(left_glob))
+    right_files = sorted(glob.glob(right_glob))
 
+    if len(left_files) == 0 or len(left_files) != len(right_files):
+        raise RuntimeError("Nb d'images gauche/droite incohérent ou nul")
 
-def input_float(prompt: str, default: Optional[float] = None, min_v: Optional[float] = None) -> float:
-    while True:
-        s = input(f"{prompt}" + (f" [{default}]" if default is not None else "") + " : ").strip()
-        if not s and default is not None:
-            v = float(default)
-        else:
-            try:
-                v = float(s)
-            except ValueError:
-                print("Nombre invalide.")
-                continue
-        if min_v is not None and v < min_v:
-            print(f"Doit être >= {min_v}")
+    debug_dir = os.path.join(calib_dir, DEBUG_SUBDIR)
+    os.makedirs(debug_dir, exist_ok=True)
+
+    # points 3D du damier
+    objp = np.zeros((pattern_size[0] * pattern_size[1], 3), np.float32)
+    objp[:, :2] = np.mgrid[0:pattern_size[0], 0:pattern_size[1]].T.reshape(-1, 2)
+    objp *= float(square_size_m)
+
+    objpoints = []
+    imgpointsL = []
+    imgpointsR = []
+
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-4)
+
+    imgL_last = None
+    for idx, (lf, rf) in enumerate(zip(left_files, right_files)):
+        imgL = cv2.imread(lf, cv2.IMREAD_GRAYSCALE)
+        imgR = cv2.imread(rf, cv2.IMREAD_GRAYSCALE)
+        if imgL is None or imgR is None:
             continue
-        return v
 
-
-def input_int(prompt: str, default: Optional[int] = None, min_v: Optional[int] = None) -> int:
-    while True:
-        s = input(f"{prompt}" + (f" [{default}]" if default is not None else "") + " : ").strip()
-        if not s and default is not None:
-            v = int(default)
-        else:
-            try:
-                v = int(s)
-            except ValueError:
-                print("Entier invalide.")
-                continue
-        if min_v is not None and v < min_v:
-            print(f"Doit être >= {min_v}")
+        retL, cornersL = cv2.findChessboardCorners(imgL, pattern_size)
+        retR, cornersR = cv2.findChessboardCorners(imgR, pattern_size)
+        if not (retL and retR):
             continue
-        return v
 
+        cornersL = cv2.cornerSubPix(imgL, cornersL, (11, 11), (-1, -1), criteria)
+        cornersR = cv2.cornerSubPix(imgR, cornersR, (11, 11), (-1, -1), criteria)
 
-def run_python(script_path: str, env: Optional[Dict[str, str]] = None) -> int:
-    if not os.path.exists(script_path):
-        die(f"Script introuvable: {script_path}")
-    cmd = [sys.executable, script_path]
-    p = subprocess.Popen(cmd, env=env)
-    return p.wait()
+        objpoints.append(objp)
+        imgpointsL.append(cornersL)
+        imgpointsR.append(cornersR)
+        imgL_last = imgL
 
+        # visu
+        visL = cv2.cvtColor(imgL, cv2.COLOR_GRAY2BGR)
+        visR = cv2.cvtColor(imgR, cv2.COLOR_GRAY2BGR)
+        cv2.drawChessboardCorners(visL, pattern_size, cornersL, True)
+        cv2.drawChessboardCorners(visR, pattern_size, cornersR, True)
+        cv2.imwrite(os.path.join(debug_dir, f"pair_{idx:03d}.png"), np.hstack((visL, visR)))
 
-def find_latest_calib_dir(root_prefix: str = DEFAULT_CALIB_ROOT) -> str:
-    """
-    photoForCalib.py crée photos_calibration, puis photos_calibration1, photos_calibration2, ...
-    On prend le plus récent existant.
-    """
-    candidates = []
-    if os.path.exists(root_prefix):
-        candidates.append(root_prefix)
-    i = 1
-    while True:
-        d = f"{root_prefix}{i}"
-        if not os.path.exists(d):
-            break
-        candidates.append(d)
-        i += 1
-    if not candidates:
-        die("Aucun dossier de capture trouvé (photos_calibration*).")
-    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return candidates[0]
+    if len(objpoints) == 0:
+        raise RuntimeError("Aucun damier valide trouvé sur les paires d'images")
 
+    h, w = imgL_last.shape[:2]
+    image_size = (w, h)
 
-def parse_rms_from_stdout(stdout: str) -> Optional[float]:
-    # calibrationCamera.py imprime: "[INFO] Calibration stéréo OK, RMS = <val>" :contentReference[oaicite:3]{index=3}
-    key = "RMS ="
-    for line in stdout.splitlines():
-        if key in line:
-            try:
-                return float(line.split(key, 1)[1].strip())
-            except Exception:
-                return None
-    return None
+    # mono calib
+    _, mtxL, distL, _, _ = cv2.calibrateCamera(objpoints, imgpointsL, image_size, None, None)
+    _, mtxR, distR, _, _ = cv2.calibrateCamera(objpoints, imgpointsR, image_size, None, None)
 
+    # stereo calib (RMS = retS)
+    criteria_stereo = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5)
+    flags = cv2.CALIB_FIX_INTRINSIC
 
-def run_stereo_calib(calib_dir: str, pattern_w: int, pattern_h: int, square_size_m: float) -> Dict[str, Any]:
-    """
-    Lance calibrationCamera.py mais en le COPIANT puis patchant 3 constantes simples:
-    - CALIBFILE
-    - PATTERN_SIZE
-    - SQUARE_SIZE
-    Pour éviter de modifier ton fichier source à la main.
-    """
-    work = os.path.abspath(".work_calib_tmp")
-    os.makedirs(work, exist_ok=True)
-    patched = os.path.join(work, "stereo_calib_patched.py")
-    shutil.copy(STEREO_CALIB_PY, patched)  # :contentReference[oaicite:4]{index=4}
+    retS, mtxL, distL, mtxR, distR, R, T, E, F = cv2.stereoCalibrate(
+        objpoints, imgpointsL, imgpointsR,
+        mtxL, distL, mtxR, distR,
+        image_size,
+        criteria=criteria_stereo,
+        flags=flags
+    )
 
-    with open(patched, "r", encoding="utf-8") as f:
-        src = f.read()
+    R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
+        mtxL, distL, mtxR, distR,
+        image_size, R, T, alpha=0
+    )
 
-    src = src.replace('CALIBFILE = "photos_calibration"', f'CALIBFILE = "{calib_dir}"')
-    src = src.replace("PATTERN_SIZE = (9, 6)", f"PATTERN_SIZE = ({pattern_w}, {pattern_h})")
-    # calibrationCamera.py utilise SQUARE_SIZE en "m" si tu mets m ; ici on impose mètres.
-    src = src.replace("SQUARE_SIZE  = 0.025", f"SQUARE_SIZE  = {square_size_m}")
+    map1x, map1y = cv2.initUndistortRectifyMap(mtxL, distL, R1, P1, image_size, cv2.CV_32FC1)
+    map2x, map2y = cv2.initUndistortRectifyMap(mtxR, distR, R2, P2, image_size, cv2.CV_32FC1)
 
-    with open(patched, "w", encoding="utf-8") as f:
-        f.write(src)
+    out_npz = os.path.join(debug_dir, "stereo_params.npz")
+    np.savez(
+        out_npz,
+        mtxL=mtxL, distL=distL, mtxR=mtxR, distR=distR,
+        R=R, T=T, E=E, F=F,
+        R1=R1, R2=R2, P1=P1, P2=P2, Q=Q,
+        map1x=map1x, map1y=map1y, map2x=map2x, map2y=map2y,
+        image_size=image_size
+    )
 
-    cmd = [sys.executable, patched]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    out, _ = p.communicate()
+    return float(retS), out_npz, debug_dir
 
-    rms = parse_rms_from_stdout(out)
-    if p.returncode != 0:
-        die(f"Calibration stéréo échouée.\n--- log ---\n{out}\n--- fin log ---")
+# ---------------------------
+# Capture + calibration en boucle
+# ---------------------------
+def capture_pairs(calib_dir: str, n_photos: int, countdown_s: float):
+    for i in range(n_photos):
+        if countdown_s > 0:
+            time.sleep(float(countdown_s))
 
-    # calibrationCamera.py déplace stereo_params.npz vers <calib_dir>/visualisation_calibration/stereo_params.npz :contentReference[oaicite:5]{index=5}
-    stereo_npz = os.path.join(calib_dir, "visualisation_calibration", "stereo_params.npz")
-    if not os.path.exists(stereo_npz):
-        die(f"stereo_params.npz introuvable: {stereo_npz}")
+        imgL = capture_bgr(camL, lockL)
+        imgR = capture_bgr(camR, lockR)
 
-    return {"rms": rms, "stereo_npz": stereo_npz, "log": out}
+        cv2.imwrite(os.path.join(calib_dir, f"left_{i:03d}.png"), imgL)
+        cv2.imwrite(os.path.join(calib_dir, f"right_{i:03d}.png"), imgR)
 
+def capture_and_calibrate_loop(
+    baseline_m: float,
+    n_photos: int,
+    countdown_s: float,
+    pattern_cols: int,
+    pattern_rows: int,
+    square_size_m: float,
+    rms_threshold: float,
+    max_attempts: int = 10,
+):
+    pattern_size = (int(pattern_cols), int(pattern_rows))
 
-def launch_capture_ui(n_photos: int, delay_s: float) -> None:
-    """
-    photoForCalib.py a N_PHOTOS et COUNTDOWN_SECONDS en dur :contentReference[oaicite:6]{index=6}
-    => on fait un patch temporaire identique au principe calibration.
-    """
-    work = os.path.abspath(".work_capture_tmp")
-    os.makedirs(work, exist_ok=True)
-    patched = os.path.join(work, "capture_ui_patched.py")
-    shutil.copy(CAPTURE_UI_PY, patched)  # :contentReference[oaicite:7]{index=7}
+    last = {}
+    for attempt in range(1, max_attempts + 1):
+        calib_dir = ensure_dir_unique(CALIB_ROOT_DIR)
+        capture_pairs(calib_dir, int(n_photos), float(countdown_s))
 
-    with open(patched, "r", encoding="utf-8") as f:
-        src = f.read()
-
-    # Remplacements simples sur les lignes "N_PHOTOS = 120" et "COUNTDOWN_SECONDS = 0.2" :contentReference[oaicite:8]{index=8}
-    src = src.replace("N_PHOTOS = 120", f"N_PHOTOS = {int(n_photos)}")
-    src = src.replace("COUNTDOWN_SECONDS = 0.2", f"COUNTDOWN_SECONDS = {float(delay_s)}")
-
-    with open(patched, "w", encoding="utf-8") as f:
-        f.write(src)
-
-    print("\n1) Capture: ouvrir http://0.0.0.0:5000 dans un navigateur")
-    print("2) Lancer la séquence, attendre fin, puis CTRL+C dans le terminal pour revenir ici.\n")
-
-    # Process bloquant: l'utilisateur stoppe au CTRL+C
-    subprocess.run([sys.executable, patched], check=False)
-
-
-def draw_mire(w: int, h: int) -> Any:
-    img = 255 * (0 * (cv2.UMat(h, w, cv2.CV_8UC3)))  # placeholder
-    img = cv2.UMat.get(img)
-    img[:] = (0, 0, 0)
-
-    cx, cy = w // 2, h // 2
-    # croix centre
-    cv2.line(img, (cx - 60, cy), (cx + 60, cy), (255, 255, 255), 2)
-    cv2.line(img, (cx, cy - 60), (cx, cy + 60), (255, 255, 255), 2)
-
-    # carré "max" (juste visuel)
-    margin = int(min(w, h) * 0.15)
-    cv2.rectangle(img, (margin, margin), (w - margin, h - margin), (255, 255, 255), 2)
-
-    cv2.putText(img, "Ajuste le laser: centre laser == centre camera gauche",
-                (20, 40), FONT, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(img, "Appuie sur Q pour quitter la mire",
-                (20, 75), FONT, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-    return img
-
-
-def laser_alignment_loop(cam_index_left: int = 0):
-    cap = cv2.VideoCapture(cam_index_left)
-    if not cap.isOpened():
-        die(f"Impossible d'ouvrir la caméra index={cam_index_left}")
-
-    # tente de récupérer une taille d'image
-    ret, frame = cap.read()
-    if not ret:
-        cap.release()
-        die("Impossible de lire un frame caméra.")
-    h, w = frame.shape[:2]
-
-    mire = draw_mire(w, h)
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        # centre caméra gauche
-        cx, cy = w // 2, h // 2
-        cv2.circle(frame, (cx, cy), 6, (0, 255, 0), -1)
-        cv2.putText(frame, f"Centre cam: ({cx},{cy})", (10, h - 10), FONT, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-
-        cv2.imshow(MIRE_WIN, mire)
-        cv2.imshow(CAM_WIN, frame)
-        k = cv2.waitKey(1) & 0xFF
-        if k in (ord("q"), ord("Q")):
-            break
-
-    cap.release()
-    cv2.destroyWindow(MIRE_WIN)
-    cv2.destroyWindow(CAM_WIN)
-
-
-def compute_max_angle_deg(distance_m: float, rect_w_m: float, rect_h_m: float) -> float:
-    """
-    Hypothèse: max_angle est le max entre demi-largeur et demi-hauteur:
-      angle_x = atan((W/2)/D)
-      angle_y = atan((H/2)/D)
-      max = max(angle_x, angle_y)
-    """
-    ax = math.degrees(math.atan((rect_w_m * 0.5) / distance_m))
-    ay = math.degrees(math.atan((rect_h_m * 0.5) / distance_m))
-    return float(max(ax, ay))
-
-
-def main():
-    cfg = load_json(CONFIG_JSON_PATH)
-
-    optics = ensure_dict(cfg, "optics")
-    camera = ensure_dict(cfg, "camera")
-    laser = ensure_dict(cfg, "laser")
-    calib = ensure_dict(cfg, "calibration")
-
-    # ====== inputs user ======
-    baseline_m = input_float("Baseline camera-camera (m)", optics.get("baseline_m", 0.10), min_v=0.001)
-    n_photos = input_int("Nombre de paires de photos", calib.get("n_photos", 120), min_v=10)
-    delay_s = input_float("Secondes entre chaque capture", calib.get("countdown_s", 0.2), min_v=0.0)
-
-    pattern_w = input_int("Damier: nb coins intérieurs (largeur)", calib.get("pattern_w", 9), min_v=2)
-    pattern_h = input_int("Damier: nb coins intérieurs (hauteur)", calib.get("pattern_h", 6), min_v=2)
-    square_size_m = input_float("Damier: taille d'une case (m)", calib.get("square_size_m", 0.025), min_v=1e-6)
-
-    cam_left = input_int("Index caméra gauche", camera.get("left_index", 0), min_v=0)
-    cam_right = input_int("Index caméra droite", camera.get("right_index", 1), min_v=0)
-
-    optics["baseline_m"] = float(baseline_m)
-    camera["left_index"] = int(cam_left)
-    camera["right_index"] = int(cam_right)
-    calib["n_photos"] = int(n_photos)
-    calib["countdown_s"] = float(delay_s)
-    calib["pattern_w"] = int(pattern_w)
-    calib["pattern_h"] = int(pattern_h)
-    calib["square_size_m"] = float(square_size_m)
-
-    save_json(CONFIG_JSON_PATH, cfg)
-
-    # ====== boucle capture + calib jusqu'à RMS OK ======
-    while True:
-        print("\n=== CAPTURE PHOTOS ===")
-        launch_capture_ui(n_photos=n_photos, delay_s=delay_s)
-
-        calib_dir = find_latest_calib_dir(DEFAULT_CALIB_ROOT)
-        print(f"[INFO] Dossier capture utilisé: {calib_dir}")
-
-        print("\n=== CALIBRATION STEREO ===")
-        res = run_stereo_calib(
+        rms, npz_path, debug_dir = run_stereo_calibration(
             calib_dir=calib_dir,
-            pattern_w=pattern_w,
-            pattern_h=pattern_h,
-            square_size_m=square_size_m
+            pattern_size=pattern_size,
+            square_size_m=float(square_size_m),
         )
 
-        rms = res["rms"]
-        stereo_npz = res["stereo_npz"]
+        last = {
+            "attempt": attempt,
+            "calib_dir": calib_dir,
+            "debug_dir": debug_dir,
+            "npz_path": npz_path,
+            "rms": rms,
+            "ok": rms <= float(rms_threshold),
+        }
 
-        print(f"[INFO] RMS = {rms} (seuil OK <= {RMS_OK_THRESHOLD})")
-        if rms is None or rms > RMS_OK_THRESHOLD:
-            print("[WARN] Calibration jugée mauvaise -> recommencer capture + calibration.")
-            continue
+        if last["ok"]:
+            # écrit JSON
+            cfg = load_json(CONFIG_PATH)
+            cfg.setdefault("optics", {})
+            cfg["optics"]["baseline_m"] = float(baseline_m)
+            cfg["optics"]["stereo_calibration_path"] = npz_path
+            cfg["optics"]["calibration_photos_dir"] = calib_dir
+            cfg["optics"]["pattern_size"] = [int(pattern_cols), int(pattern_rows)]
+            cfg["optics"]["square_size_m"] = float(square_size_m)
+            cfg.setdefault("calibration_quality", {})
+            cfg["calibration_quality"]["stereo_rms"] = float(rms)
+            save_json(CONFIG_PATH, cfg)
+            return last
 
-        # OK -> on écrit dans JSON
-        calib["calib_dir"] = calib_dir
-        calib["stereo_npz_path"] = stereo_npz
-        calib["stereo_rms"] = rms
-        save_json(CONFIG_JSON_PATH, cfg)
-        break
+    return last  # NOK après max_attempts
 
-    # ====== alignment laser (aide) ======
-    print("\n=== ALIGNMENT LASER (physique) ===")
-    print("Une mire s'affiche + le flux cam gauche avec le centre en vert.")
-    print("Ajuste mécaniquement le laser jusqu'à ce que le point laser tombe sur le centre caméra.")
-    print("Quitter la mire: touche Q")
-    laser_alignment_loop(cam_index_left=cam_left)
+# ---------------------------
+# Laser align: calc max_angle_deg + écriture JSON + test tirs
+# ---------------------------
+def gpio_from_string(pin: str):
+    return getattr(board, pin)
 
-    # ====== mesure mur + rectangle pour calculer max_angle_deg ======
-    print("\n=== MESURES POUR max_angle_deg ===")
-    dist_m = input_float("Distance laser->mur (m)", laser.get("wall_distance_m", 3.0), min_v=0.01)
-    rect_w_m = input_float("Largeur rectangle laser sur mur (m)", laser.get("rect_width_m", 1.0), min_v=0.001)
-    rect_h_m = input_float("Hauteur rectangle laser sur mur (m)", laser.get("rect_height_m", 1.0), min_v=0.001)
+def compute_max_angle_deg(distance_wall_m: float, rect_w_m: float, rect_h_m: float) -> float:
+    # demi-largeur / demi-hauteur -> angles max (petits angles ok, mais on calc exact)
+    ax = math.degrees(math.atan((rect_w_m / 2.0) / distance_wall_m))
+    ay = math.degrees(math.atan((rect_h_m / 2.0) / distance_wall_m))
+    return float(max(ax, ay))
 
-    max_angle = compute_max_angle_deg(dist_m, rect_w_m, rect_h_m)
+def laser_alignment_and_save(distance_wall_m: float, rect_w_m: float, rect_h_m: float):
+    cfg = load_json(CONFIG_PATH)
+    laser_cfg = cfg.setdefault("laser", {})
+    pin_str = laser_cfg.get("laser_pin", "D17")
 
-    laser["wall_distance_m"] = float(dist_m)
-    laser["rect_width_m"] = float(rect_w_m)
-    laser["rect_height_m"] = float(rect_h_m)
-    laser["max_angle_deg"] = float(max_angle)
+    max_angle = compute_max_angle_deg(float(distance_wall_m), float(rect_w_m), float(rect_h_m))
+    laser_cfg["max_angle_deg"] = max_angle
+    laser_cfg["alignment"] = {
+        "distance_wall_m": float(distance_wall_m),
+        "rect_w_m": float(rect_w_m),
+        "rect_h_m": float(rect_h_m),
+    }
 
-    save_json(CONFIG_JSON_PATH, cfg)
+    save_json(CONFIG_PATH, cfg)
 
-    print(f"\n[OK] max_angle_deg calculé = {max_angle:.3f} deg")
-    print(f"[OK] JSON mis à jour: {CONFIG_JSON_PATH}")
-    print(f"[OK] stereo_params.npz: {calib['stereo_npz_path']}")
+    # test tir: centre + côté max (comme demandé)
+    galvo = GalvoController(
+        max_angle_deg=max_angle,
+        laser_pin=gpio_from_string(pin_str),
+        gain=int(laser_cfg.get("gain", 2)),
+        safe_start=bool(laser_cfg.get("safe_start", True)),
+    )
 
+    try:
+        # centre
+        galvo.set_angles(theta_x=0.0, theta_y=0.0)
+        time.sleep(0.2)
+        galvo.laser_on()
+        time.sleep(0.2)
+        galvo.laser_off()
+
+        # côté max horizontal (droite)
+        galvo.set_angles(theta_x=max_angle, theta_y=0.0)
+        time.sleep(0.2)
+        galvo.laser_on()
+        time.sleep(0.2)
+        galvo.laser_off()
+
+        # côté max horizontal (gauche)
+        galvo.set_angles(theta_x=-max_angle, theta_y=0.0)
+        time.sleep(0.2)
+        galvo.laser_on()
+        time.sleep(0.2)
+        galvo.laser_off()
+    finally:
+        galvo.shutdown()
+
+    return max_angle
+
+# ---------------------------
+# UI minimal (form préremplie depuis JSON)
+# ---------------------------
+HTML = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Calibration & Laser</title>
+    <style>
+      body { font-family: sans-serif; margin: 24px; max-width: 820px; }
+      label { display:block; margin-top: 12px; }
+      input { width: 260px; padding: 6px; }
+      button { margin-top: 16px; padding: 8px 14px; }
+      .row { display:flex; gap:18px; flex-wrap: wrap; }
+      .card { border:1px solid #ddd; border-radius:10px; padding:16px; margin-top:16px; }
+      pre { background:#f6f6f6; padding:12px; border-radius:10px; overflow:auto; }
+    </style>
+  </head>
+  <body>
+    <h2>Calibration stéréo</h2>
+    <form method="POST" action="/run_calibration">
+      <div class="row">
+        <label>baseline (m)
+          <input name="baseline_m" type="number" step="0.001" value="{{baseline_m}}">
+        </label>
+
+        <label>nb photos (paires)
+          <input name="n_photos" type="number" step="1" value="{{n_photos}}">
+        </label>
+
+        <label>délai / COUNTDOWN (s)
+          <input name="countdown_s" type="number" step="0.01" value="{{countdown_s}}">
+        </label>
+
+        <label>pattern damier (cols)
+          <input name="pattern_cols" type="number" step="1" value="{{pattern_cols}}">
+        </label>
+
+        <label>pattern damier (rows)
+          <input name="pattern_rows" type="number" step="1" value="{{pattern_rows}}">
+        </label>
+
+        <label>taille carré (m)
+          <input name="square_size_m" type="number" step="0.0001" value="{{square_size_m}}">
+        </label>
+
+        <label>seuil RMS (<=)
+          <input name="rms_threshold" type="number" step="0.0001" value="{{rms_threshold}}">
+        </label>
+      </div>
+
+      <button type="submit">Capture + Calibration (boucle si NOK)</button>
+    </form>
+
+    {% if result %}
+      <div class="card">
+        <h3>Résultat</h3>
+        <pre>{{result}}</pre>
+      </div>
+    {% endif %}
+
+    <h2>Alignement laser</h2>
+    <form method="POST" action="/run_laser_align">
+      <div class="row">
+        <label>distance mur (m)
+          <input name="distance_wall_m" type="number" step="0.01" value="{{distance_wall_m}}">
+        </label>
+
+        <label>largeur rectangle laser (m)
+          <input name="rect_w_m" type="number" step="0.01" value="{{rect_w_m}}">
+        </label>
+
+        <label>hauteur rectangle laser (m)
+          <input name="rect_h_m" type="number" step="0.01" value="{{rect_h_m}}">
+        </label>
+      </div>
+      <button type="submit">Calcul max_angle + tirs (centre + côtés)</button>
+    </form>
+
+    {% if laser_result %}
+      <div class="card">
+        <h3>Laser</h3>
+        <pre>{{laser_result}}</pre>
+      </div>
+    {% endif %}
+  </body>
+</html>
+"""
+
+def get_defaults_from_json():
+    cfg = load_json(CONFIG_PATH)
+
+    optics = cfg.get("optics", {})
+    laser = cfg.get("laser", {})
+
+    pattern = optics.get("pattern_size", [9, 6])
+    if isinstance(pattern, (list, tuple)) and len(pattern) == 2:
+        pattern_cols, pattern_rows = int(pattern[0]), int(pattern[1])
+    else:
+        pattern_cols, pattern_rows = 9, 6
+
+    return {
+        "baseline_m": float(optics.get("baseline_m", 0.10)),
+        "n_photos": int(cfg.get("calibration_capture", {}).get("n_photos", 120)),
+        "countdown_s": float(cfg.get("calibration_capture", {}).get("countdown_s", 0.2)),
+        "pattern_cols": pattern_cols,
+        "pattern_rows": pattern_rows,
+        "square_size_m": float(optics.get("square_size_m", 0.025)),
+        "rms_threshold": float(cfg.get("calibration_quality", {}).get("rms_threshold", 0.8)),
+        "distance_wall_m": float(laser.get("alignment", {}).get("distance_wall_m", 2.0)),
+        "rect_w_m": float(laser.get("alignment", {}).get("rect_w_m", 1.0)),
+        "rect_h_m": float(laser.get("alignment", {}).get("rect_h_m", 0.6)),
+    }
+
+@app.route("/", methods=["GET"])
+def index():
+    d = get_defaults_from_json()
+    return render_template_string(HTML, **d, result=None, laser_result=None)
+
+@app.route("/run_calibration", methods=["POST"])
+def run_calibration():
+    baseline_m = float(request.form["baseline_m"])
+    n_photos = int(request.form["n_photos"])
+    countdown_s = float(request.form["countdown_s"])
+    pattern_cols = int(request.form["pattern_cols"])
+    pattern_rows = int(request.form["pattern_rows"])
+    square_size_m = float(request.form["square_size_m"])
+    rms_threshold = float(request.form["rms_threshold"])
+
+    # stocke aussi dans JSON les paramètres de capture
+    cfg = load_json(CONFIG_PATH)
+    cfg.setdefault("calibration_capture", {})
+    cfg["calibration_capture"]["n_photos"] = n_photos
+    cfg["calibration_capture"]["countdown_s"] = countdown_s
+    cfg.setdefault("calibration_quality", {})
+    cfg["calibration_quality"]["rms_threshold"] = rms_threshold
+    save_json(CONFIG_PATH, cfg)
+
+    result = capture_and_calibrate_loop(
+        baseline_m=baseline_m,
+        n_photos=n_photos,
+        countdown_s=countdown_s,
+        pattern_cols=pattern_cols,
+        pattern_rows=pattern_rows,
+        square_size_m=square_size_m,
+        rms_threshold=rms_threshold,
+    )
+
+    d = get_defaults_from_json()
+    return render_template_string(HTML, **d, result=json.dumps(result, indent=2, ensure_ascii=False), laser_result=None)
+
+@app.route("/run_laser_align", methods=["POST"])
+def run_laser_align():
+    distance_wall_m = float(request.form["distance_wall_m"])
+    rect_w_m = float(request.form["rect_w_m"])
+    rect_h_m = float(request.form["rect_h_m"])
+
+    max_angle = laser_alignment_and_save(distance_wall_m, rect_w_m, rect_h_m)
+
+    d = get_defaults_from_json()
+    laser_result = {
+        "max_angle_deg_written_to_json": max_angle,
+        "json_path": CONFIG_PATH
+    }
+    return render_template_string(HTML, **d, result=None, laser_result=json.dumps(laser_result, indent=2, ensure_ascii=False))
+
+# ---------------------------
+# Shutdown propre
+# ---------------------------
+def signal_handler(sig, frame):
+    try:
+        camL.close()
+        camR.close()
+    except Exception:
+        pass
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n[STOP] Interrompu par utilisateur.")
-        sys.exit(0)
+    print("http://0.0.0.0:5000")
+    app.run(host="0.0.0.0", port=5000, debug=False)

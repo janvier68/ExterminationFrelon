@@ -1,12 +1,10 @@
 # Cap Projet 5A 
 
 peach
- le frelon son au abord de ruche et le abielle on du mal à sortir à cause d'eux
- le but et de 
+    le frelon son au abord de ruche et le abielle on du mal à sortir à cause d'eux
+    le but et de 
 
-apiculture saint germain
 
-davril ? juillet plostot 
 ## Organisation Projet 
 IA
     fintuning du modèle yolo11
@@ -32,3 +30,15 @@ remplis le readme pour expliquer nos propo
 
 ## question
 rasbery>config safe zone en pixels ?
+
+
+---
+refair setup 
+tester setup
+fait main sans ua 
+faire teste composant + tester
+dataseht sur profondeur
+datasehet sur Cam (installer ia)
+dataseht sur galvo (uilsation api)
+trier ia et fair un datashet de comment faire
+hardware, installation rasbery et explication de pk du comment (baser sur word)
