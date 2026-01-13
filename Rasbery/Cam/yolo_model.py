@@ -4,16 +4,16 @@ from modlib.models import COLOR_FORMAT, MODEL_TYPE, Model
 from modlib.models.post_processors import pp_od_yolo_ultralytics
 
 class YOLO(Model):
-    def __init__(self):
+    def __init__(self,pathZim,pathLab):
         super().__init__(
-            model_file=os.path.expanduser("~/Exterminateur/ia/best_imx_model/packerOut.zip"),
+            model_file=os.path.expanduser(pathZim),
             model_type=MODEL_TYPE.CONVERTED,
             color_format=COLOR_FORMAT.RGB,
             preserve_aspect_ratio=False,
         )
 
         self.labels = np.genfromtxt(
-            os.path.expanduser("~/Exterminateur/ia/best_imx_model/labels.txt"),
+            os.path.expanduser(pathLab),
             dtype=str,
             delimiter="\n",
         )

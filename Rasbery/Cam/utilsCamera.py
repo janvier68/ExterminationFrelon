@@ -7,9 +7,9 @@ from .yolo_model import YOLO
 
 
 class CameraManager:
-    def __init__(self, cam_index=0, frame_rate=8, on_detection=None,safeZone=0.20):
+    def __init__(self,pathZim,pathLab, cam_index=0, frame_rate=8, on_detection=None,safeZone=0.20,):
         self.device = AiCamera(num=cam_index, frame_rate=frame_rate)
-        self.model = YOLO()
+        self.model = YOLO(pathZim,pathLab)
         self.annotator = Annotator()
         self.lock = threading.Lock()
 

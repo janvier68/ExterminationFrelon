@@ -49,9 +49,8 @@ except Exception as e:
 # =============================
 # Caméras
 # =============================
-camG = CameraManager(cam_index=int(cfg["camera"]["left_index"]), safeZone=float(cfg["security"]["border_sec"]),frame_rate=int(cfg["camera"]["frame_rate"]))   # gauche
-camD = CameraManager(cam_index=int(cfg["camera"]["right_index"]), safeZone=float(cfg["security"]["border_sec"]),frame_rate=int(cfg["camera"]["frame_rate"]))  # droite
-
+camG = CameraManager(pathZim=str(cfg["camera"]["ia_packerOutZip_path"]),pathLab=str(cfg["camera"]["ia_labelTxt_path"]),cam_index=int(cfg["camera"]["left_index"]), safeZone=float(cfg["security"]["border_sec"]),frame_rate=int(cfg["camera"]["frame_rate"]))   # gauche
+camD = CameraManager(pathZim=str(cfg["camera"]["ia_packerOutZip_path"]),pathLab=str(cfg["camera"]["ia_labelTxt_path"]),cam_index=int(cfg["camera"]["right_index"]), safeZone=float(cfg["security"]["border_sec"]),frame_rate=int(cfg["camera"]["frame_rate"]))  # droite
 
 # =============================
 # Flux vidéo Flask

@@ -10,8 +10,9 @@ wheels/
 .venv
 
 yoloLabel
-best_imx_model
 runs
 
+old*
+best_imx_model
 train_dataset
-origineLabel
+test_dataset

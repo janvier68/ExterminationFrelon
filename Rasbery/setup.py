@@ -354,24 +354,6 @@ HTML = """
       </div>
     {% endif %}
 
-    <h2>Alignement laser</h2>
-    <form method="POST" action="/run_laser_align">
-      <div class="row">
-        <label>distance mur (m)
-          <input name="distance_wall_m" type="number" step="0.01" value="{{distance_wall_m}}">
-        </label>
-
-        <label>largeur rectangle laser (m)
-          <input name="rect_w_m" type="number" step="0.01" value="{{rect_w_m}}">
-        </label>
-
-        <label>hauteur rectangle laser (m)
-          <input name="rect_h_m" type="number" step="0.01" value="{{rect_h_m}}">
-        </label>
-      </div>
-      <button type="submit">Calcul max_angle + tirs (centre + côtés)</button>
-    </form>
-
     {% if laser_result %}
       <div class="card">
         <h3>Laser</h3>
@@ -381,6 +363,24 @@ HTML = """
   </body>
 </html>
 """
+
+# <h2>Alignement laser</h2>
+# <form method="POST" action="/run_laser_align">
+#   <div class="row">
+#     <label>distance mur (m)
+#       <input name="distance_wall_m" type="number" step="0.01" value="{{distance_wall_m}}">
+#     </label>
+
+#     <label>largeur rectangle laser (m)
+#       <input name="rect_w_m" type="number" step="0.01" value="{{rect_w_m}}">
+#     </label>
+
+#     <label>hauteur rectangle laser (m)
+#       <input name="rect_h_m" type="number" step="0.01" value="{{rect_h_m}}">
+#     </label>
+#   </div>
+#   <button type="submit">Calcul max_angle + tirs (centre + côtés)</button>
+# </form>
 
 def get_defaults_from_json():
     cfg = load_json(CONFIG_PATH)
