@@ -11,10 +11,6 @@ IA
     expliquation de pourquoi se modèle 
 Rasbery
     tout de se qu'il y a à maitre dans la rasbery pour fonctionnner
-Hardware
-    tuto pour installer projet dans la rasberry 
-    explication du choix matériel
-
 
 ## todo 
 
