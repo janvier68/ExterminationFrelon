@@ -7,9 +7,9 @@ Ce projet vise à **détecter automatiquement les frelons** à l’aide d’une 
 
 ## Architecture globale
  - IA
-    entrainrer le modèle pour reconnaitre le frelon
+    Parite pour entrainrer un modèle personnaliser pour reconnaitre le frelon
  - Rasbery
-    code récuprer infot caméra calcule angle galvo et alume le laser
+    Code dans la rasberry
 
 ## Liste du matériel
 
@@ -20,27 +20,18 @@ Ce projet vise à **détecter automatiquement les frelons** à l’aide d’une 
 - Module galvo laser ×1  
   Produit : https://www.amazon.fr/dp/B0C7VLWXV3
 - Alimentation pour module galvo ×1
-- Laser (dangereux) ×1
+- Laser ×1
 - Boîtier ×1
 - 2x AOP TL082 
 - 1x DAC MCP4288 
 
 ## Conditions de montage et d’alignement
 
-Pour un fonctionnement optimal :
+Pour un fonctionnement :
 
 - Les caméras et la sortie du galvanomètre doivent être alignées en profondeur.
 - Le galvanomètre doit être positionné sous la caméra gauche.
-- Le système de visée est basé sur la caméra gauche, qui doit être parfaitement alignée avec la sortie des miroirs.
-- Distance entre les centres optiques des deux caméras (`baseline_m`) : ex : 10 cm.
 - Les deux caméras doivent être strictement parallèles.
-
-### Paramètres de configuration
-
-Les variables suivantes sont modifiables dans le fichier de configuration :
-
-- `baseline_m` = 10 cm (par défaut)
-- `h_cl_m` = 9.5 cm (par défaut)
 
 ### Schéma
 ![Boitier](img/reglePlan.png)
@@ -50,8 +41,7 @@ Les variables suivantes sont modifiables dans le fichier de configuration :
 
 ## Installation du projet
 
-### Entraînement de l’IA
-nous avons déjà entrainter un modèle yolo11n avec notre propre dataset, il se trouce ici IA/best.py
+### Parie Entraînement de l’IA
 
 #### Étapes
 
@@ -59,13 +49,12 @@ nous avons déjà entrainter un modèle yolo11n avec notre propre dataset, il se
 2. Fine-tuning du modèle
 3. Export compatible IMX500
 4. Conversion au format requis par la NPU
-5. Déploiement sur la Raspberry
+5. Maitre sur la Raspberry
 
-detailler dans [[IA/README.md]]
+nous avons déjà entrainter un modèle yolo11n avec notre propre dataset, il se trouce ici IA/best.py
+Pour plus de detailler aller [[IA/README.md]]
 
-
-
-### 1. Installation du système d’exploitation
+### Partie Installation du système d’exploitation
 
 il faut maitre le systemte d'exploitation de la rasbery sur un carte sd (min 16go) pour cela nous allons utiliser la facher officher rasbery
 
