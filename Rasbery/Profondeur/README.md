@@ -9,7 +9,7 @@ Calculer la position 3D d’un point à partir de deux caméras (gauche/droite),
 * Distance réelle
 
 Les calculs sont basés sur le schéma : 
-![Schéma de profondeur](img/shemaProfondeur.png)
+![Schéma de profondeur](../../img/shemaProfondeur.png)
 
 ## Classe `StereoAngleCalculator`
 

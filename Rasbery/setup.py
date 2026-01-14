@@ -249,7 +249,7 @@ def gpio_from_string(pin: str):
 def compute_max_angle_deg(distance_wall_m: float, rect_w_m: float, rect_h_m: float) -> float:
     ax = math.degrees(math.atan((rect_w_m / 2.0) / distance_wall_m))
     ay = math.degrees(math.atan((rect_h_m / 2.0) / distance_wall_m))
-    return float(max(ax, ay))
+    return float(max(ax, ay)) # prendre max si rectangle
 
 def laser_alignment_and_save(distance_wall_m: float, rect_w_m: float, rect_h_m: float):
     cfg = load_json(CONFIG_PATH)

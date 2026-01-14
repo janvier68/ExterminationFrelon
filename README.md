@@ -277,7 +277,7 @@ Readme.md dans chaque classe
 Une **safe zone** en pixels est définie.
 
 
-## Branchement électrique – Tourelle Laser
+## Branchement électrique
 
 ### Objectif du système
 
@@ -306,6 +306,7 @@ Le SPI est un protocole de communication série synchrone permettant de relier u
 - Contrôleur principal
 - Génère les valeurs numériques envoyées au DAC via SPI
 - Pilote l’allumage/extinction du laser
+
 ![b1](img/b1.png)
 
 ### DAC MCP4822
@@ -393,6 +394,7 @@ Le SPI est un protocole de communication série synchrone permettant de relier u
 ### Logiciel
 
 * [ ] Configuration safe zone à ajouster lors setup
+* [ ] config bouton teste laser et application paramètre
 * [ ] Tests :
   * setup.py (voir bouton pour laser)
   * mainNoUI.py
