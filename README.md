@@ -382,12 +382,15 @@ Le SPI est un protocole de communication série synchrone permettant de relier u
 
 ### Logiciel
 
-* [ ] Configuration safe zone à ajouster lors setup
-* [ ] config bouton teste laser et application paramètre
+
+* [ ] code angle galvo supérieur et inférueur, x et y pas même axe 
 * [ ] Tests :
   * setup.py (voir bouton pour laser)
+    porblème, quand on step 3 enregistre pas dans le json 
   * mainNoUI.py
   * testMateriel.py
+* [ ] Configuration safe zone à ajouster lors setup + rectangulaire 
+* [ ] wifi router directe sur rasbery
 
 ### Documentation
 

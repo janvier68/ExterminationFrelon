@@ -1,0 +1,19 @@
+[project]
+name = "ruche"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "edge-mdt-tpc>=1.1.0",
+    "imx500-converter[pt]>=3.16.1",
+    "model-compression-toolkit>=2.4.1",
+    "numpy<2",
+    "onnxsim>=0.4.36",
+    "opencv-python>=4.11.0.86",
+    "pydantic<=2.11.7",
+    "sony-custom-layers>=0.3.0",
+    "torch>=2.8.0",
+    "tqdm>=4.67.1",
+    "ultralytics==8.3.225",
+]

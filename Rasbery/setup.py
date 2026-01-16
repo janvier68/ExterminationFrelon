@@ -47,6 +47,12 @@ STATE = {
     "last_laser": None,
 }
 
+CALIB_CACHE = {
+    "npz_path": None,
+    "cx": None,
+    "cy": None,
+}
+
 # ---------------------------
 # JSON helpers
 # ---------------------------
@@ -110,7 +116,7 @@ def capture_bgr(camera: Picamera2, lock: threading.Lock) -> np.ndarray:
         frame = req.make_array("main")
         req.release()
     # Picamera2 -> RGB888 : convertir en BGR pour OpenCV
-    return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    return frame#cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
 def mjpeg_generator(which: str):
     cam = camL if which == "left" else camR
@@ -125,20 +131,51 @@ def mjpeg_generator(which: str):
             b"Content-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
         )
 
-def draw_center_cross(frame_bgr: np.ndarray) -> np.ndarray:
+def get_calib_center_left():
+    cfg = load_json(CONFIG_PATH)
+    npz_path = cfg.get("optics", {}).get("stereo_calibration_path", None)
+    if not npz_path or not os.path.exists(npz_path):
+        CALIB_CACHE["npz_path"] = None
+        CALIB_CACHE["cx"] = None
+        CALIB_CACHE["cy"] = None
+        return None, None
+
+    if CALIB_CACHE["npz_path"] == npz_path and CALIB_CACHE["cx"] is not None:
+        return CALIB_CACHE["cx"], CALIB_CACHE["cy"]
+
+    data = np.load(npz_path)
+    mtxL = data["mtxL"]  # intrinsèque gauche
+    cx = float(mtxL[0, 2])
+    cy = float(mtxL[1, 2])
+
+    CALIB_CACHE["npz_path"] = npz_path
+    CALIB_CACHE["cx"] = cx
+    CALIB_CACHE["cy"] = cy
+    return cx, cy
+
+
+def draw_center_cross(frame_bgr: np.ndarray, cx=None, cy=None) -> np.ndarray:
     h, w = frame_bgr.shape[:2]
-    cx, cy = w // 2, h // 2
+    if cx is None or cy is None:
+        cx_i, cy_i = w // 2, h // 2
+    else:
+        cx_i, cy_i = int(round(cx)), int(round(cy))
+
     L = 18
     t = 2
-    cv2.line(frame_bgr, (cx - L, cy), (cx + L, cy), (255, 255, 255), t)
-    cv2.line(frame_bgr, (cx, cy - L), (cx, cy + L), (255, 255, 255), t)
-    cv2.circle(frame_bgr, (cx, cy), 3, (255, 255, 255), -1)
+    cv2.line(frame_bgr, (cx_i - L, cy_i), (cx_i + L, cy_i), (255, 255, 255), t)
+    cv2.line(frame_bgr, (cx_i, cy_i - L), (cx_i, cy_i + L), (255, 255, 255), t)
+    cv2.circle(frame_bgr, (cx_i, cy_i), 3, (255, 255, 255), -1)
     return frame_bgr
+
 
 def mjpeg_generator_left_center():
     while True:
         frame = capture_bgr(camL, lockL)
-        frame = draw_center_cross(frame)
+
+        cx, cy = get_calib_center_left()  # None,None si pas de calib
+        frame = draw_center_cross(frame, cx=cx, cy=cy)
+
         ok, buf = cv2.imencode(".jpg", frame)
         if not ok:
             continue
@@ -146,6 +183,7 @@ def mjpeg_generator_left_center():
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
         )
+
 
 # ---------------------------
 # Calibration: version "stereo_calib.py"
@@ -249,24 +287,34 @@ def gpio_from_string(pin: str):
 def compute_max_angle_deg(distance_wall_m: float, rect_w_m: float, rect_h_m: float) -> float:
     ax = math.degrees(math.atan((rect_w_m / 2.0) / distance_wall_m))
     ay = math.degrees(math.atan((rect_h_m / 2.0) / distance_wall_m))
-    return float(max(ax, ay)) # prendre max si rectangle
+    return float(max(ax, ay))  # prendre max si rectangle
 
-def laser_alignment_and_save(distance_wall_m: float, rect_w_m: float, rect_h_m: float):
+def laser_calc_and_save(distance_wall_m: float, rect_w_m: float, rect_h_m: float) -> float:
     cfg = load_json(CONFIG_PATH)
     laser_cfg = cfg.setdefault("laser", {})
-    pin_str = laser_cfg.get("laser_pin", "D17")
-
     max_angle = compute_max_angle_deg(float(distance_wall_m), float(rect_w_m), float(rect_h_m))
-    laser_cfg["max_angle_deg"] = max_angle
+
+    laser_cfg["max_angle_deg"] = float(max_angle)
     laser_cfg["alignment"] = {
         "distance_wall_m": float(distance_wall_m),
         "rect_w_m": float(rect_w_m),
         "rect_h_m": float(rect_h_m),
     }
     save_json(CONFIG_PATH, cfg)
+    return float(max_angle)
+
+def laser_test_sequence(max_angle: float | None = None, delay: float = 0.2):
+    cfg = load_json(CONFIG_PATH)
+    laser_cfg = cfg.setdefault("laser", {})
+    pin_str = laser_cfg.get("laser_pin", "D17")
+
+    if max_angle is None:
+        max_angle = float(laser_cfg.get("max_angle_deg", 0.0))
+    if max_angle <= 0:
+        raise RuntimeError("max_angle_deg invalide. Calculer d'abord l'angle max (bouton).")
 
     galvo = GalvoController(
-        max_angle_deg=max_angle,
+        max_angle_deg=float(max_angle),
         laser_pin=gpio_from_string(pin_str),
         gain=int(laser_cfg.get("gain", 1)),
         safe_start=bool(laser_cfg.get("safe_start", True)),
@@ -274,24 +322,21 @@ def laser_alignment_and_save(distance_wall_m: float, rect_w_m: float, rect_h_m: 
     )
 
     try:
-        # centre
-        galvo.set_angles(0.0, 0.0)
-        time.sleep(0.2)
-        galvo.laser_on()
-        time.sleep(0.2)
-        galvo.laser_off()
+        points = [
+            (0.0, 0.0),
+            (-max_angle, -max_angle),
+            (-max_angle,  max_angle),
+            ( max_angle,  max_angle),
+            ( max_angle, -max_angle),
+        ]
 
-        # côtés max (horizontal)
-        for sx in (max_angle, -max_angle):
-            galvo.set_angles(sx, 0.0)
-            time.sleep(0.2)
-            galvo.laser_on()
-            time.sleep(0.2)
-            galvo.laser_off()
+        galvo.laser_on()
+        for x, y in points:
+            galvo.set_angles(float(x), float(y))
+            time.sleep(float(delay))
+        galvo.laser_off()
     finally:
         galvo.shutdown()
-
-    return max_angle
 
 # ---------------------------
 # Defaults
@@ -419,7 +464,7 @@ STEP1 = """
 
 STEP2 = """
 <h2>2) Capture (flux live + séquence)</h2>
-<h1 style="color:red;">Vérifer caméra droit bien à droite sinon revenir avant et changer</h1>
+<h1 style="color:red;">Vérif caméra droit bien à droite sinon revenir avant et changer</h1>
 
 <div class="card">
   <div><b>Dossier capture courant</b></div>
@@ -572,25 +617,77 @@ STEP4 = """
   <img src="/stream/left_center" width="640">
 </div>
 
-<form method="POST" action="/run_laser_align">
+<div class="card">
   <div class="row">
     <label>distance mur (m)<br>
-      <input name="distance_wall_m" type="number" step="0.01" value="{{distance_wall_m}}">
+      <input id="distance_wall_m" type="number" step="0.01" value="{{distance_wall_m}}">
     </label>
     <label>largeur rectangle laser (m)<br>
-      <input name="rect_w_m" type="number" step="0.01" value="{{rect_w_m}}">
+      <input id="rect_w_m" type="number" step="0.01" value="{{rect_w_m}}">
     </label>
     <label>hauteur rectangle laser (m)<br>
-      <input name="rect_h_m" type="number" step="0.01" value="{{rect_h_m}}">
+      <input id="rect_h_m" type="number" step="0.01" value="{{rect_h_m}}">
     </label>
   </div>
-  <button type="submit">Calculer max_angle_deg + tirs (centre + côtés)</button>
-</form>
 
-{% if laser %}
-<div class="card"><pre>{{laser}}</pre></div>
-{% endif %}
+  <div class="row" style="align-items:center;gap:12px">
+    <button onclick="calcAndSave()">Calculer max_angle_deg + écrire JSON</button>
+    <button onclick="testLaser()">Tester laser (centre + coins)</button>
+    <div id="busy" style="font-weight:bold"></div>
+  </div>
+
+  <pre id="out" style="margin-top:10px">{{laser or ""}}</pre>
+</div>
+
+<script>
+  function v(id){ return parseFloat(document.getElementById(id).value); }
+  function q(id){ return document.getElementById(id); }
+
+  async function calcAndSave(){
+    q('busy').textContent = 'Calcul...';
+    try{
+      const payload = {
+        distance_wall_m: v('distance_wall_m'),
+        rect_w_m: v('rect_w_m'),
+        rect_h_m: v('rect_h_m'),
+      };
+      const r = await fetch('/laser_calc', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json();
+      if(!d.ok) throw new Error(d.error || 'calc failed');
+      q('out').textContent =
+        JSON.stringify({max_angle_deg: d.max_angle_deg, json_written: d.json_written}, null, 2);
+    }catch(e){
+      q('out').textContent = 'Erreur: ' + e;
+    }finally{
+      q('busy').textContent = '';
+    }
+  }
+
+  async function testLaser(){
+    q('busy').textContent = 'Test...';
+    try{
+      const r = await fetch('/laser_test', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({})
+      });
+      const d = await r.json();
+      if(!d.ok) throw new Error(d.error || 'test failed');
+      q('out').textContent =
+        JSON.stringify({test_started: true, using_max_angle_deg: d.max_angle_deg}, null, 2);
+    }catch(e){
+      q('out').textContent = 'Erreur: ' + e;
+    }finally{
+      q('busy').textContent = '';
+    }
+  }
+</script>
 """
+
 
 # ---------------------------
 # Routes: streams
@@ -723,7 +820,8 @@ def capture_burst(calib_dir: str, n_photos: int, countdown_s: float):
     # fallback automatique utilisé par la boucle de calibration en cas de NOK
     for i in range(n_photos):
         if countdown_s > 0:
-            time.sleep(float(countdown_s))
+            # time.sleep(float(countdown_s)) #todo remove debug only
+            time.sleep(0.2)
         imgL = capture_bgr(camL, lockL)
         imgR = capture_bgr(camR, lockR)
         cv2.imwrite(os.path.join(calib_dir, f"left_{i:03d}.png"), imgL)
@@ -796,29 +894,50 @@ def run_calibration_loop():
 # ---------------------------
 # Step 4 (laser)
 # ---------------------------
+
 @app.get("/step4")
 def step4():
     d = defaults()
     body_html = render_template_string(STEP4, **d, laser=STATE["last_laser"])
     return render_template_string(BASE, body=Markup(body_html))
 
-@app.post("/run_laser_align")
-def run_laser_align():
-    distance_wall_m = float(request.form["distance_wall_m"])
-    rect_w_m = float(request.form["rect_w_m"])
-    rect_h_m = float(request.form["rect_h_m"])
+@app.post("/laser_calc")
+def laser_calc():
+    data = request.get_json(force=True)
+    try:
+        distance_wall_m = float(data["distance_wall_m"])
+        rect_w_m = float(data["rect_w_m"])
+        rect_h_m = float(data["rect_h_m"])
+        max_angle = laser_calc_and_save(distance_wall_m, rect_w_m, rect_h_m)
 
-    max_angle = laser_alignment_and_save(distance_wall_m, rect_w_m, rect_h_m)
+        STATE["last_laser"] = json.dumps(
+            {"max_angle_deg": float(max_angle), "json_written": CONFIG_PATH},
+            indent=2,
+            ensure_ascii=False
+        )
 
-    STATE["last_laser"] = json.dumps(
-        {"max_angle_deg": float(max_angle), "json_written": CONFIG_PATH},
-        indent=2,
-        ensure_ascii=False
-    )
+        return jsonify({"ok": True, "max_angle_deg": float(max_angle), "json_written": CONFIG_PATH})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
-    d = defaults()
-    body_html = render_template_string(STEP4, **d, laser=STATE["last_laser"])
-    return render_template_string(BASE, body=Markup(body_html))
+
+@app.post("/laser_test")
+def laser_test():
+    try:
+        cfg = load_json(CONFIG_PATH)
+        laser_cfg = cfg.get("laser", {})
+        max_angle = float(laser_cfg.get("max_angle_deg", 0.0))
+        if max_angle <= 0:
+            raise RuntimeError("max_angle_deg non défini. Clique d'abord sur 'Calculer max_angle_deg'.")
+
+        # lancer en thread pour ne pas bloquer le serveur/flask + garder la page fluide
+        t = threading.Thread(target=laser_test_sequence, args=(max_angle, 0.2), daemon=True)
+        t.start()
+
+        return jsonify({"ok": True, "max_angle_deg": float(max_angle)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
 
 # ---------------------------
 # Shutdown propre
